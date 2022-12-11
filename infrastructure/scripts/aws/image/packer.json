@@ -1,0 +1,81 @@
+{
+  "variables": {
+    "aws_access_key": "",
+    "aws_secret_key": "",
+    "purpose": "geode-benchmarks"
+  },
+  "builders": [
+    {
+      "type": "amazon-ebs",
+      "name": "geode-benchmarks",
+      "region": "us-west-2",
+      "source_ami_filter": {
+        "filters": {
+          "virtualization-type": "hvm",
+          "name": "ubuntu/images/*ubuntu-bionic-18.04-amd64-server-*",
+          "root-device-type": "ebs"
+        },
+        "owners": ["099720109477"],
+        "most_recent": true
+      },
+      "instance_type": "t2.small",
+      "ssh_username": "geode",
+      "ami_name": "geode-benchmarks-{{timestamp}}",
+      "communicator": "ssh",
+      "ssh_pty": "true",
+      "ami_virtualization_type": "hvm",
+      "user_data_file": "./files/defaults.cfg",
+      "tags": {
+        "OS_Version": "Ubuntu",
+        "Release": "Latest",
+        "Base_AMI_Name": "{{ .SourceAMIName }}",
+        "Extra": "{{ .SourceAMITags.TagName }}",
+        "purpose": "{{user `purpose`}}"
+      }
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "file",
+      "source": "./files/defaults.cfg",
+      "destination": "/tmp/defaults.cfg"
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "# install Docker per https://docs.docker.com/engine/install/ubuntu/",
+        "sudo apt-get update",
+        "sudo apt-get install -y apt-transport-https ca-certificates curl gnupg-agent software-properties-common",
+        "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -",
+        "sudo apt-key fingerprint 0EBFCD88",
+        "sudo add-apt-repository \"deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable\"",
+        "sudo apt-get update",
+        "sudo apt-get install -y docker-ce docker-ce-cli containerd.io"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "# permissions per https://docs.docker.com/engine/install/linux-postinstall/#manage-docker-as-a-non-root-user",
+        "sudo usermod -aG docker geode"
+      ]
+    },
+    {
+      "type": "shell",
+      "inline": [
+        "curl -fsSL https://download.bell-sw.com/pki/GPG-KEY-bellsoft | sudo apt-key add -",
+        "sudo add-apt-repository \"deb [arch=amd64] https://apt.bell-sw.com/ stable main\"",
+        "sudo apt update",
+        "sudo apt-get -o Dpkg::Options::=\"--force-confnew\" upgrade -y",
+        "sudo apt install -y java-common bellsoft-java8 bellsoft-java11 bellsoft-java17 unzip dstat",
+        "sudo update-java-alternatives -s bellsoft-java8-amd64",
+        "sudo mv /tmp/defaults.cfg /etc/cloud/cloud.cfg.d/defaults.cfg",
+        "sudo sh -c \"echo 'StrictHostKeyChecking no' >> /etc/ssh/ssh_config\"",
+        "sudo sh -c \"echo 'net.ipv4.tcp_syncookies = 0' >> /etc/sysctl.conf\"",
+        "sudo sh -c \"echo 'vm.max_map_count = 250000' >> /etc/sysctl.conf\"",
+        "sudo apt-get remove -y unattended-upgrades",
+        "sudo apt-get -y autoremove"
+      ]
+    }
+  ]
+}

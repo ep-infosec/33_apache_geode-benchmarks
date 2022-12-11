@@ -1,0 +1,183 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import org.gradle.util.VersionNumber
+
+plugins { id 'java-library' }
+
+group 'org.apache.geode-benchmark'
+version '1.0-SNAPSHOT'
+
+def outputDir = project.hasProperty('outputDir') ? project.findProperty('outputDir') : new File(project.buildDir, "benchmarks_" + getDate()).getAbsolutePath()
+def geodeVersion = project.hasProperty('geodeVersion') ? project.findProperty('geodeVersion') : '1.+'
+
+def getDate() {
+  new Date().format('yyyyMMddHHmmss')
+}
+
+
+repositories {
+  /*
+   This is used in CI to benchmark various new/old versions of Geode.
+   Also useful in dev where you can clone geode and publishToMavenLocal
+   */
+  mavenLocal() {
+    metadataSources {
+      mavenPom()
+      ignoreGradleMetadataRedirection()
+    }
+  }
+  // fall back to mavenCentral, which has lots of released versions of Geode
+  mavenCentral() {
+    metadataSources {
+      mavenPom()
+      ignoreGradleMetadataRedirection()
+    }
+  }
+}
+
+configurations {
+  geodeVersionResolver
+}
+
+dependencies {
+  geodeVersionResolver(group: 'org.apache.geode', name: 'geode-core', version: geodeVersion)
+  geodeVersion = configurations.geodeVersionResolver.resolvedConfiguration.resolvedArtifacts.find {it.name == 'geode-core'}.moduleVersion.id.version
+  logger.info("Building with Geode ${geodeVersion}.")
+
+  implementation platform("org.apache.geode:geode-all-bom:${geodeVersion}")
+
+  implementation(project(':harness'))
+
+  implementation(group: 'org.junit.jupiter', name: 'junit-jupiter-engine', version: project.'junit-jupiter.version')
+  implementation(group: 'org.junit-pioneer', name: 'junit-pioneer', version: project.'junit-pioneer.version')
+  implementation(group: 'org.assertj', name: 'assertj-core', version: project.'assertj-core.version')
+
+  implementation(group: 'org.slf4j', name: 'slf4j-simple', version: project.'slf4j-simple.version')
+
+  implementation(group: 'org.apache.geode', name: 'geode-core')
+  if (VersionNumber.parse(geodeVersion) >= VersionNumber.parse("1.11.0.+")) {
+    runtimeOnly(group: 'org.apache.geode', name: 'geode-log4j')
+  } else {
+    runtimeOnly(group: 'org.apache.logging.log4j', name: 'log4j-core')
+  }
+
+  // Required for missing dependency on geode-core.
+  runtimeOnly(group: 'org.eclipse.jetty', name: 'jetty-webapp')
+
+  testImplementation(group: 'org.junit.jupiter', name: 'junit-jupiter-params', version: project.'junit-jupiter.version')
+  testImplementation(group: 'org.mockito', name: 'mockito-core', version: project.'mockito.version')
+  testImplementation(group: 'io.github.classgraph', name: 'classgraph', version: project.'classgraph.version')
+}
+
+compileJava {
+  options.compilerArgs << '-Xlint:unchecked' << "-Werror"
+  options.deprecation = true
+}
+
+test{
+  afterTest { desc, result ->
+    logger.quiet "Executing test ${desc.className}.${desc.name} with result: ${result.resultType}"
+  }
+  useJUnitPlatform()
+  systemProperty 'org.slf4j.simpleLogger.showDateTime', 'true'
+  systemProperty 'org.slf4j.simpleLogger.dateTimeFormat', 'yyyy-MM-dd HH:mm:ss.SSS'
+  systemProperty 'org.slf4j.simpleLogger.showThreadNam', 'false'
+  systemProperty 'org.slf4j.simpleLogger.showShortLogName', 'true'
+}
+
+task benchmark(type: Test) {
+  if (project.hasProperty("benchmark.withToolchainVersion"))
+    javaLauncher = javaToolchains.launcherFor {
+      languageVersion = JavaLanguageVersion.of(project.findProperty("benchmark.withToolchainVersion"))
+    }
+  if (project.hasProperty('testJVM') && !testJVM.trim().isEmpty()) {
+    logger.warn("-PtestJVM is deprecated. Use -Pbenchmark.withToolchainVersion.")
+    executable = "${testJVM}/bin/java"
+  }
+  outputs.upToDateWhen { false }
+  testClassesDirs = project.sourceSets.main.output.classesDirs
+  classpath = project.sourceSets.main.runtimeClasspath
+  useJUnitPlatform()
+  testLogging {
+    exceptionFormat = 'full'
+    showStandardStreams = true
+  }
+
+  exclude "**/NoopBenchmark.class"
+  exclude "**/P2pPartitionedPutLongBenchmark.class"
+
+  forkEvery 1
+  failFast = true
+
+
+  def resolvedJavaLauncher = javaLauncher.getOrNull()
+  if (resolvedJavaLauncher != null) {
+    if (resolvedJavaLauncher.getMetadata().languageVersion >= JavaLanguageVersion.of(17)) {
+      jvmArgs += "@${project.projectDir}/src/main/resources/open-all-jdk-packages-linux-openjdk-17"
+    }
+  }
+
+  systemProperty 'org.slf4j.simpleLogger.showDateTime', 'true'
+  systemProperty 'org.slf4j.simpleLogger.dateTimeFormat', 'yyyy-MM-dd HH:mm:ss.SSS'
+  systemProperty 'org.slf4j.simpleLogger.showThreadName', 'false'
+  systemProperty 'org.slf4j.simpleLogger.showShortLogName', 'true'
+  systemProperty 'benchmark.TEST_HOSTS', project.findProperty('hosts')
+  systemProperty 'benchmark.TEST_METADATA', project.findProperty('metadata')
+  systemProperty 'OUTPUT_DIR', outputDir
+  systemProperty 'benchmark.OUTPUT_DIR', outputDir
+
+  //Set all project properties starting with "benchmark." as system properties in the test
+  //JVM
+  project.properties.findAll {
+    it.key.startsWith("benchmark.")
+  }.each {
+    systemProperty(it.getKey(), it.getValue())
+  }
+
+  //------------------------------------------------------------
+  //Legacy properties - these properties were added before the benchmark.
+  //prefix convention. They will be passed on to the JVM for now to not break
+  //CI or peoples scripts. Remove these soon!
+  //------------------------------------------------------------
+  legacyProperty(delegate, "withGc")
+  legacyProperty(delegate, "withHeap")
+  legacyProperty(delegate, "withThreads")
+  legacyProperty(delegate, "withWarmup")
+  legacyProperty(delegate, "withDuration")
+  legacyProperty(delegate, "withSsl")
+  legacyProperty(delegate, "withSslProtocols")
+  legacyProperty(delegate, "withSslCiphers")
+  legacyProperty(delegate, "withSniProxy")
+  legacyProperty(delegate, "withSniProxyImage")
+  legacyProperty(delegate, "withRouter")
+  legacyProperty(delegate, "withRouterImage")
+  legacyProperty(delegate, "withSecurityManager")
+
+  doFirst {
+    if(!project.hasProperty('hosts')) {
+      throw new GradleException("You must set the hosts property to a comma separated list of hosts. Eg ./gradlew benchmark -Phosts=localhost,localhost,localhost")
+    }
+  }
+}
+
+private void legacyProperty(Test test, String key) {
+  if (project.hasProperty(key)) {
+    logger.warn("-P${key} is deprecated. Use -Pbenchmark.${key}.")
+    test.systemProperty "benchmark.${key}", project.findProperty(key)
+  }
+}
